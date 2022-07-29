@@ -1,16 +1,6 @@
 #!/bin/sh
 
-# stuff that always happens
-# start function
-# stop function
-# case handlings
-# exit
-
-# chmod 755 file_name
-# move file to /etc/init.d/
-# arm image, su -, to get admin for cp and mv
-
-# executable goes in /usr/sbin
+# provided by cclamb
 
 DAEMON_NAME="testdaemon"
 
