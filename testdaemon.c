@@ -1,5 +1,3 @@
-// for standard gcc: make -f make-gcc
-// for arm: make -f make-arm
 #include <stdio.h>
 #include <sys/types.h>
 #include <stdbool.h>
@@ -11,10 +9,10 @@
 #include <sys/stat.h>
 
 #define OK              0
-#define ERR_SETSID      1
+#define NO_SETSID       1
 #define SIGTERM         2
 #define SIGHUP          3
-#define ERR_FORK        4
+#define NO_FORK         4
 #define ERR_CHDIR       5
 #define ERR_WTF         9
 #define INIT_ERR        10
@@ -22,12 +20,12 @@
 #define NO_FILE         12
 #define DAEMON_NAME     "Justins Daemon"
 
-// params, move to config file
 static const char* STATE_URL = "http://54.183.247.219:8080/state";
 static const char* TEMP_URL = "http://54.183.247.219:8080/temp";
-static const char* REPORT_URL = "http://54.183.247.219:8080/report";
+static const char* REPORT_URL = "http://54.183.247.219:8080/update";
 static const char* TEMP_FILENAME = "/tmp/temp";
 static const char* STATE_FILENAME = "/tmp/status";
+static const char*  WORKING_DIR   = "/";
 
  struct memory {
    char *response;
@@ -71,7 +69,7 @@ static char* sendpost(char *url, char *message, bool verb) {
     CURL *curl = curl_easy_init();
     if (curl) {
         CURLcode res;
-        FILE* outputFile = fopen("curloutput.txt", "wb");
+        FILE* outputFile = fopen("garbage.txt", "wb");
         curl_easy_setopt(curl, CURLOPT_URL, url);
         curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "POST");
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, outputFile);
@@ -93,7 +91,7 @@ static char* sendget(char *url, char *message, bool verb) {
     CURL *curl = curl_easy_init();
     if (curl) {
         CURLcode res;
-        FILE* outputFile = fopen("curloutput.txt", "wb");
+        FILE* outputFile = fopen("garbage.txt", "wb");
         curl_easy_setopt(curl, CURLOPT_URL, url);
         curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "GET");
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, outputFile);
@@ -113,41 +111,54 @@ static char* sendget(char *url, char *message, bool verb) {
     return chunk.response;
 }
 
-static int daemonize(void) {
-    openlog(DAEMON_NAME, LOG_PID | LOG_NDELAY | LOG_NOWAIT, LOG_DAEMON);
+static void _exit_process(int err) {
+  syslog(LOG_INFO, "error so exit process");
+  closelog(); 
+  exit(err);
+}
 
-    syslog(LOG_INFO, DAEMON_NAME);
+static void _handle_fork(const pid_t pid) {
+  // For some reason, we were unable to fork.
+  if (pid < 0) {
+    _exit_process(NO_FORK);
+  }
 
-    pid_t pid = fork();
-    if (pid < 0) {
-        syslog(LOG_ERR, strerror(pid));
-        return ERR_FORK;
-    }
+  // Fork was successful so exit the parent process.
+  if (pid > 0) {
+    exit(OK);
+  }
+}
 
-    if (pid > 0) {
-        return OK;
-    }
+static void daemonize(void) {
+  // Fork from the parent process.
+  pid_t pid = fork();
 
-    if (setsid() < -1) {
-        syslog(LOG_ERR, strerror(pid));
-        return ERR_SETSID;
-    }
+  // Open syslog with the specified logmask.
+  openlog(DAEMON_NAME, LOG_PID | LOG_NDELAY | LOG_NOWAIT, LOG_DAEMON);
 
-    close(STDIN_FILENO);
-    close(STDOUT_FILENO);
-    close(STDERR_FILENO);
+  // Handle the results of the fork.
+  _handle_fork(pid);
 
-    umask(S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+  // Now become the session leader.
+  if (setsid() < -1) {
+    _exit_process(NO_SETSID);
+  }
 
-    if (chdir("/") < 0) {
-        syslog(LOG_ERR, strerror(pid));
-        return ERR_CHDIR;
-    }
+  // Set our custom signal handling.
+  signal(SIGTERM, _signal_handler);
+  signal(SIGHUP, _signal_handler);
 
-    signal(SIGTERM, _signal_handler);
-    signal(SIGHUP, _signal_handler);
+  // New file persmissions on this process, they need to be permissive.
+  //umask(S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH);
+  //umask(666);
 
-    return OK;
+  // Change to the working directory.
+  chdir(WORKING_DIR);
+
+  // Closing file descriptors (STDIN, STDOUT, etc.).
+  for (long x = sysconf(_SC_OPEN_MAX); x>=0; x--) {
+    close(x);
+  }
 }
 
 static void getcurrenttemp(void) {
@@ -187,29 +198,16 @@ static void getstatusfromaws(void) {
     chunk.size = NULL;
 }
 
-static int startprogram(void) {
-    // run the code until kill
-    while (true) {
-        getcurrenttemp();
-        getstatusfromaws();        
-        sleep(5);
-    }
-    
-    return ERR_WTF;
-}
-
 int main(int argc, char **argv) {
 
     int err;
     syslog(LOG_INFO, DAEMON_NAME);
-    err = daemonize();
-    if (err != OK) {
-        return ERR_WTF;
-    }
-    err = startprogram();
-    if (err != OK) {
-        return ERR_WTF;
-    }
+    daemonize();
+    while (true) {
+        getcurrenttemp();
+        getstatusfromaws();        
+        sleep(5);
+    }   
 
     return ERR_WTF;
 }
